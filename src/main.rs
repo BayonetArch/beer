@@ -11,8 +11,8 @@ use std::{
 mod bindings;
 pub type Res<T> = Result<T, Box<dyn Error>>;
 pub const ESC: &'static str = "\x1b";
-const DEF_COL_OFFSET: u16 = 4;
-const DEF_ROW_OFFSET: u16 = 2;
+const COL_START_POS: u16 = 6;
+const ROW_START_POS: u16 = 2;
 
 enum ArrowKey {
     UP,
@@ -66,8 +66,8 @@ struct Editor {
     screen_rows: u16,
     cx: u16,
     cy: u16,
-    col_display_area: u16,
-    row_display_area: u16,
+    // HACK:
+    #[allow(unused)]
     col_offset: usize,
     row_offset: usize,
     stdout: Stdout,
@@ -102,18 +102,13 @@ impl Editor {
             .append(true)
             .open(dg_fp)?;
 
-        let col_display_area = screen_cols - DEF_COL_OFFSET - 1;
-        let row_display_area = screen_rows - DEF_ROW_OFFSET - 1;
-
         Ok(Self {
             screen_cols,
             screen_rows,
-            cx: DEF_COL_OFFSET,
-            cy: DEF_ROW_OFFSET,
+            cx: COL_START_POS,
+            cy: ROW_START_POS,
             col_offset: 0,
             row_offset: 0,
-            col_display_area,
-            row_display_area,
             stdout,
             appbuf,
             file_rows,
@@ -130,12 +125,8 @@ fn update_screensize(e: &mut Editor, rx: &mut Receiver<(u16, u16)>) -> Res<()> {
             if e.cy >= e.screen_rows - 1 {
                 e.cy = e.screen_rows - 1;
             }
-
             beer_appendbuf!(e, "{}", ansi_reset_scrollable_region!());
-            beer_appendbuf!(e, "{}", ansi_set_scrollable_region!(1, e.screen_rows - 1));
-
-            e.col_display_area = e.screen_cols - DEF_COL_OFFSET - 1;
-            e.row_display_area = e.screen_rows - DEF_ROW_OFFSET - 1;
+            beer_appendbuf!(e, "{}", ansi_set_scrollable_region!(2, e.screen_rows - 1));
         }
         _ => {}
     }
@@ -169,24 +160,31 @@ fn manage_einput(e: &mut Editor) -> Res<bool> {
                 let mut buf = [0u8; 3];
                 io::stdin().read(&mut buf)?;
 
+                // // HACK:
+                // let total_len = e.file_rows.as_ref().unwrap().len();
+
                 if buf[0] == b'[' {
                     match arrow_key_pressed(buf[1] as char) {
                         ArrowKey::UP => {
-                            if e.cy != DEF_ROW_OFFSET {
+                            if e.cy as usize == ROW_START_POS as usize && e.row_offset != 0 {
+                                e.row_offset -= 1;
+                            } else if e.cy != ROW_START_POS {
                                 e.cy -= 1;
                             }
                         }
 
                         ArrowKey::DOWN => {
-                            if e.cy as usize >= e.row_offset + e.screen_rows as usize {
+                            if e.cy as usize >= e.screen_rows as usize - 1
+                            // && e.cy as usize + e.row_offset <= total_len
+                            {
                                 e.row_offset += 1;
-                            } else {
+                            } else if e.cy != e.screen_rows - 1 {
                                 e.cy += 1;
                             }
                         }
 
                         ArrowKey::LEFT => {
-                            if e.cx != DEF_COL_OFFSET {
+                            if e.cx != COL_START_POS {
                                 e.cx -= 1;
                             }
                         }
@@ -245,7 +243,7 @@ fn display_bottom_bar(e: &mut Editor, file_name: &str, file_type: &str) {
     beer_appendbuf!(
         e,
         "{}{}",
-        ansi_move_to!(DEF_ROW_OFFSET, e.screen_rows),
+        ansi_move_to!(ROW_START_POS, e.screen_rows),
         ansi_clear_current_line!()
     );
     beer_appendbuf!(e, "{}", bar);
@@ -267,17 +265,19 @@ fn display_bottom_bar(e: &mut Editor, file_name: &str, file_type: &str) {
     beer_appendbuf!(e, "{ft}");
 }
 
-fn update_display(e: &mut Editor) {
+fn update_display(e: &mut Editor, fp: &str) {
     if e.welcome {
         print_welcome_msg(e);
     } else {
         if let Some(lines) = &e.file_rows {
             for (lc, l) in lines.iter().enumerate() {
                 if (e.row_offset..=e.row_offset + e.screen_rows as usize - 1).contains(&lc) {
+                    let display_row = lc - e.row_offset;
+
                     beer_appendbuf!(
                         e,
                         "{}{}\x1b[1;30m{}\x1b[0m",
-                        ansi_move_to!(1, DEF_ROW_OFFSET as usize + lc),
+                        ansi_move_to!(2, ROW_START_POS as usize + display_row),
                         ansi_clear_current_line!(),
                         lc
                     );
@@ -285,14 +285,14 @@ fn update_display(e: &mut Editor) {
                     beer_appendbuf!(
                         e,
                         "{}{}",
-                        ansi_move_to!(DEF_COL_OFFSET, DEF_ROW_OFFSET as usize + lc - e.row_offset),
+                        ansi_move_to!(COL_START_POS, ROW_START_POS as usize + display_row),
                         l
                     );
                 }
             }
         }
     }
-    display_bottom_bar(e, "No Name", "rs");
+    display_bottom_bar(e, fp, "unknown");
 
     beer_appendbuf!(e, "{}", ansi_move_to!(e.cx, e.cy));
 }
@@ -306,18 +306,25 @@ fn parse_args() -> Option<String> {
 
 #[allow(unreachable_code, unused_labels)]
 fn main() -> Res<()> {
+    fatal!("Leaving this for a while.I need to study.");
     let file_path = parse_args();
 
     let (mut tx, mut rx) = mpsc::channel();
     let appbuf = String::new();
+    // NOTE: Clone here
+    let fp = file_path.clone().unwrap_or("No Name".to_string());
+
     let mut e = Editor::new(appbuf, ".dbg.log", file_path)?;
+    flogf!(e.debug_file, "Starting beer.....");
 
     let raw = RawMode::new(); //NOTE:  let needed for drop
     raw.enable()?;
     im_enter_alt_screen!();
     im_set_scrollable_region!(2, e.screen_rows - 1);
     // im_enable_mouse!();
+
     thread::spawn(move || handle_screensize_change(&mut tx));
+    flogf!(e.debug_file, "Spawned 'screensize_change' handler thread");
 
     'main_loop: loop {
         e.appbuf.clear();
@@ -327,8 +334,7 @@ fn main() -> Res<()> {
 
         #[rustfmt::skip]
         if !manage_einput(&mut e)? { break };
-
-        update_display(&mut e);
+        update_display(&mut e, &fp);
 
         beer_flush!(e);
         sleep_ms!(33); // 30fps
@@ -515,6 +521,16 @@ pub mod beer_macros {
             return Err(format!("{}:{} {}", file!(), line!(), format!($($fmt)*)).into())
         }};
     }
+
+    #[macro_export]
+    macro_rules! flogf {
+    ($f:expr,$($fmt:tt)*) => {{
+        use crate::bindings::current_str_date;
+        let t = current_str_date().expect("Could not get current time.");
+        let _ = writeln!($f, "{} {}",t,format!($($fmt)*));
+
+    }};
+}
 }
 
 // TODO: make  'update_screensize' to use WINCH signal

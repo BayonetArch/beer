@@ -1,11 +1,11 @@
 /* qc.c */
 
 #include "include/essen.h"
-#include <ncurses.h>
+#include <unistd.h>
 
+#define FILE_PATH "../../large.txt"
 
 int main(void) {
- WINDOW * w =   initscr();
-
+    pause();
     return 0;
 }
