@@ -306,7 +306,7 @@ fn parse_args() -> Option<String> {
 
 #[allow(unreachable_code, unused_labels)]
 fn main() -> Res<()> {
-    fatal!("Leaving this for a while.I need to study.");
+    // fatal!("Leaving this for a while.I need to study.");
     let file_path = parse_args();
 
     let (mut tx, mut rx) = mpsc::channel();
